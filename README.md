@@ -66,7 +66,7 @@ The script uses two configuration files:
 
 ## Configuration options
 
-config.json has the following structure:
+This tool can be used without HDFS for file storage by using the local file system for the input dataset and the output splits. **Note**: replace `hdfs` below with `file` below for `source_file`, `train_file`, and `test_file`. The config.json has the following structure:
 
 ```
 {
@@ -102,9 +102,9 @@ config.json has the following structure:
 }
 ```
 
-- __engine_config__ - file to be used as engine.json (see configuration of UR)
+- __engine_config__ - file to be used as the Engine's config JSON file (see configuration of UR)
 - __splitting__ - this section is about splitting data into train and test sets
-	- __version__ - version to append to train and test file names (may be helpful is different test with different split configurations are run)
+	- __version__ - version to append to train and test file names (may be helpful if different test with different split configurations are run)
 	- __source_file__ - file with data to be split
 	- __train_file__ - file with training data to be produced (note that version will be append to file name)
 	- __test_file__ - file with test data to be produced (note that version will be append to file name)
