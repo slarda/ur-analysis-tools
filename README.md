@@ -1,61 +1,68 @@
-# Universal Recommender Analysis Tool V2
+# Universal Recommender Analysis Tool V3
 
-The primary change to V2 of the tool is to simplify by integrating all external processes so one line will execute all steps.
+The primary change to V3 of the tool is to support the Harness version of the Universal Recommender (UR).
 
-The steps to execute all workflow are:
+These scripts do analysis of input data and run cross-validation tests using the UR. The analysis shows information about usage data, and the cross-validation tests use a technique called MAP@k, a type of precision test, to give a predictiveness metric to various combinations  of *indicators* used by the Correlated Cross-Occurrence (CCO) algorithm of the UR.
 
- 1. **Verify the PIO EventServer is running** `pio status` will do this.
- 2. **Export Data** We assume that the data exists in the EventServer or in HDFS. Export the data to the location specified in the `config.json` file. Since it is often desirable to use an existing data split there should be a CLI option to skip splitting to use the paths in the config as they exist.
- 3. **Split** the data as in Alexey's #1 (optional: see #2)
- 4. **Train and Deploy** To do this 3 PIO workflow steps need to be taken. These must be executed inside the directory of the UR version we are testing.
-    1. **`pio build`** This will create the Universal Recommender code and register the algorithm parameters
-    2. **`pio train`** This will create a model with the UR from the `engine.json` parameters. There will be new parameters to pass in to `pio train` that are system dependent, like how much memory to use on each Spark Driver and Executor as well as others. Not sure how or where to set these. They will not change while using one cluster so perhaps in the `config.json`.
-    3. **`pio deploy`** This will create a running PIO PredictionServer that responds to UR queries
- 5. **Analyze** Same as Alexey's #3   
+Harness has a more streamlined workflow and has a single server, that takes input and responds to queries. It also responds to a CLI so information similar to that produced by the PIO CLI can be found.
 
-# Alexey's Analysis Tools
+## The Test Process
 
-These scripts do analysis of input data and run cross-validation tests using the Universal Recommender. The analysis show information about usage data, and the CV tests use a technique called MAP@k to rest the predictiveness of the many types of *indicators* used in a deployment of the UR. The tools run in 2 phases:
+There are 2 Phases to the process that this tool supports and one that must be done using Harness.
 
- 1. **Split**: Split the data into train and test splits, calculate usage stats.
- 2. **Train and Deploy**: Import the "train" dataset into the EventServer, train, and deploy the model. This can also be scripted but is **not** part of these scripts.
- 3. **Analyze**: Run several forms of MAP@k predictiveness tests on the splits, collect stats, and create a report for Excel.
+ 1. **Split the Dataset** into training and test splits using this tool.
+ - **Create and Train the Recommender** by importing data and training the recommender using the Harness CLI.
+ - **Analyze** with this tool.
 
-**Note:** This toolset does #1 and #3 but does not do #2.
+**Note:** This toolset does #1 and #3 but does not do #2. The specific steps to execute all workflow are:
 
-Since #1 can take a significant amount of time, it is advised to run it once, then train and deploy once, and run #3 with different configs if needed. There is no need to retrain in most cases. This will create a completely reproducible split so you can safely compare results from any run of #3.
+ 1. **Install and Start the Harness Server** This process is described [here](https://github.com/actionml/harness/blob/release/0.4.0-snapshot/install.md). Notice that we are using the 0.4.0-SNAPSHOT version of the server which includes Universal Recommender.
+ 2. **Verify the Harness Server is running** `harness status` will do this.
+ 3. **Get the Full Dataset** We assume that the data exists in a single large file in the local filesystem. The data location is specified in the `config.json` file. Todo: since it is often desirable to use an existing data split there should be a CLI option to skip splitting to use the paths in the config if they exist.
+ 4. **Split** the data as defined in the config.json into a "train" and "test" split, usually about 80% of the data will go to "train", the rest is used to "test".
+ 5. **Train a Model** from the "train" split of the data:
+    1. **`harness add <engine-json-config>`** This will create the Universal Recommender instance configured to take input from the specific dataset use and use the algorithm parameters configured. The most important thing to note in the Engine's config is the `enginId` which is the instance ID for the test Engine.
+    2. **`harness import <path-to-train-split> <engine-id>`** which will import data (perhaps slowly) into the Engine Instance defined by the Engine's config file.
+    3. **`harness train <engine-id>`** This will create a model with the UR from with the `engineId` defined in the Engine's JSON config file from step #5.1 above.
+    4. **`harness status <engine-id>`** After `harness train` the model is calculated in Spark and once the trining Job is completed is immediately deployed. Check the Engine Instance status to see if the Job is running or the job status is empty, meaning it has completed. Check server logs to make sure there were no errors in training. If there are, then the analysis phase will be meaningless.
+ 6. **Analyze** : Run several forms of MAP@k predictiveness tests on the splits, collect stats, and create a report for Excel.
 
- If any change is made to the engine.json, repeat #1-3
+Since Splitting can take a significant amount of time, it is advised to run it once, then train and deploy once, and run #the analysis with different configs as needed. There is no need to retrain in most cases. This will create a completely reproducible split so you can safely compare results from any run of analysis.
+
+## A Note About Changing Parameters
+
+If any change is made to the Engine's JSON config file, the data may need to be re-imported (if different indicator names are used) or may only need to be re-trained (if algorithm params are changed). Using the identical dataset splits will allow analysis results to be compared across runs.
 
 # Setup
 
-Install Spark, PredictionIO v0.9.6 or greater, and the Universal Recommender v0.3.0 or greater. Make sure `pio status` completes with no errors and the integration-test for the UR runs correctly.
+ 1. **[Install Harness](https://github.com/actionml/harness/blob/release/0.4.0-snapshot/install.md)**: This will result in the correct versions of Python and Spark being installed.
 
- 1. Install Python and check the version
+ 2. **Check Python**
 
- 	`python --v`
+ 	`python3 --v`
 
- 	if the version is less than 2.7.9 upgrade to the most recent stable version of python using systems package management tools like `apt-get` for Ubuntu linux or `brew` for the Mac.
+ 	if the version is less than 3.7 upgrade to the most recent stable version of python using systems package management tools like `apt-get` for Ubuntu linux or `brew` for the Mac.
 
  2. Install Python libraries using the Python package manager found [here](https://pip.pypa.io/en/stable/installing/)
 
  	```
- 	sudo pip install numpy scipy pandas ml_metrics predictionio tqdm click openpyxl
+ 	sudo pip3 install numpy scipy pandas ml_metrics predictionio tqdm click openpyxl
  	```
 
- 3. Setup Spark and Pyspark paths in `.bashrc` (linux) or `.bash_profile` Mac.
+ 3. Setup Spark and Pyspark paths in `~/.bashrc` (linux) or `~/.bash_profile` or `~/.profile` macOS.
 
  	```
  	export SPARK_HOME=/path/to/spark
+ 	# this may be /usr/local/spark or wherever the root directory of the Spark installation is located
 	export PYTHONPATH=$SPARK_HOME/python/:$SPARK_HOME/python/build/:$PYTONPAHTH
 	```
 
-# Run Analysis Script
+# Run the Analysis Script
 
-Analysis script should be run from UR (Universal recommender) folder. It uses two configuration files:
+The script uses two configuration files:
 
-- `engine.json` (configuration of UR, this file is used to take event list and primary event)
-- `config.json` (all other configuration including engine.json path if necessary)
+- **`<some-engine>.json`** the configuration of UR instance being used for the analysis. This file is used to determine the indicator list and primary indicator. This code often refers to the "indicator" as an "event". The `algorithm.indicators` part of the JSON will contain the event names used in analysis. 
+- **`config.json`** contains all other configuration including the path to the above `<some-engine>.json`
 
 ## Configuration options
 
@@ -63,7 +70,7 @@ config.json has the following structure:
 
 ```
 {
-  "engine_config": "./engine.json",
+  "engine_config": "/path/to/the/engine.json",
 
   "splitting": {
     "version": "1",
@@ -119,10 +126,6 @@ config.json has the following structure:
 	- __master__ - for now only master URL is configurable
 
 ## Split the Data
-
-Get data from the EventServer with:
-
-	pio export --output path/to/store/events
 
 Use this command to run split of data into "train" and "test" sets
 
