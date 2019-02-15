@@ -1,6 +1,6 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
-#####!/usr/local/bin/python
+#####!/usr/local/bin/python3
 
 import logging
 
@@ -358,10 +358,10 @@ def run_map_test_dummy(data, items=None, probs=None, uniform=True, top=True,
         if rec.event == primaryEvent:
             user = rec.entityId
             item = rec.targetEntityId
-            if (users is None) or (user in users):
+            if not users or user in users:
                 d.setdefault(user, []).append(item)
 
-    holdoutUsers = d.keys()
+    holdoutUsers = [*d.keys()]
 
     prediction = []
     ground_truth = []
@@ -393,13 +393,13 @@ def run_map_test(data, eventNames, users=None, primaryEvent=cfg.testing.primary_
         if rec.event == primaryEvent:
             user = rec.entityId
             item = rec.targetEntityId
-            if (users is None) or (user in users):
+            if not users or user in users:
                 d.setdefault(user, []).append(item)
 
     if test:
-        holdoutUsers = d.keys()[1:N_TEST]
+        holdoutUsers = [*d.keys()][1:N_TEST]
     else:
-        holdoutUsers = d.keys()
+        holdoutUsers = [*d.keys()]
 
     prediction = []
     ground_truth = []
