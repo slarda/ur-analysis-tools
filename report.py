@@ -3,7 +3,6 @@ import os
 import csv
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.compat import range
 from openpyxl.styles import Font, PatternFill
 
 
