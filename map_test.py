@@ -2,25 +2,26 @@
 
 #####!/usr/local/bin/python3
 
-import logging
-
+import os
+import pytz
 import click
-
-from pyspark import SparkContext
-
-from pyspark.sql import SQLContext
-from pyspark.sql import functions as F
-import predictionio
-
+import random
+import logging
+import harness
+import datetime
 import pandas as pd
 import numpy as np
 import ml_metrics as metrics
+
 from tqdm import tqdm
-
-from report import CSVReport, ExcelReport
-from config import init_config
-
 from uuid import uuid4
+from dateutil import parser
+from config import init_config
+from pyspark import SparkContext
+from pyspark.sql import SQLContext
+from pyspark.sql import functions as F
+from report import CSVReport, ExcelReport
+
 
 logging.basicConfig(level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s')
@@ -28,7 +29,7 @@ logging.basicConfig(level=logging.INFO,
 #logging = logging.getlogging(__name__)
 #logging.setLevel(level=logging.DEBUG)
 
-cfg = init_config('config.json')
+cfg = init_config('config_testing.json')
 logging.debug("Application was launched with config: %s" % str(cfg.init_dict))
 
 
@@ -82,7 +83,6 @@ def mk_intersection_matrix(by_rows, columns_for_matrix,
         result.loc[en_v + vertical_suffix, en_h + horizontal_suffix] = count
     return result
 
-
 @click.command()
 @click.option('--intersections', is_flag=True)
 @click.option('--csv_report', is_flag=True)
@@ -122,8 +122,8 @@ def split(intersections, csv_report):
 
     logging.info('Split data into train and test')
     train_df, test_df = split_data(df)
-    train_df.write.json(cfg.splitting.train_file, mode="overwrite")
-    test_df.write.json(cfg.splitting.test_file, mode="overwrite")
+    train_df.coalesce(1).write.format('json').save(cfg.splitting.train_file)
+    test_df.coalesce(1).write.format('json').save(cfg.splitting.test_file)
 
 
     train_df = train_df.select("entityId", "event", "targetEntityId").cache()
@@ -353,18 +353,20 @@ def run_map_test_dummy(data, items=None, probs=None, uniform=True, top=True,
     Returns:
         list of [MAP@1, MAP@2, ... MAP@K] evaluations
     """
-    d = {}
+    user_information = {}
+
     for rec in data:
         if rec.event == primaryEvent:
             user = rec.entityId
             item = rec.targetEntityId
+
             if not users or user in users:
-                d.setdefault(user, []).append(item)
+                user_information.setdefault(user, []).append(item)
 
-    holdoutUsers = [*d.keys()]
-
+    holdoutUsers = [*user_information.keys()]
     prediction = []
     ground_truth = []
+
     if no_progress:
         gen = holdoutUsers
     else:
@@ -377,45 +379,104 @@ def run_map_test_dummy(data, items=None, probs=None, uniform=True, top=True,
         else:
             test_items = np.random.choice(items, size=(K,), p=probs)
         prediction.append(test_items)
-        ground_truth.append(d.get(user, []))
+        ground_truth.append(user_information.get(user, []))
+
     return [metrics.mapk(ground_truth, prediction, k) for k in range(1, K + 1)]
 
 
-def run_map_test(data, eventNames, users=None, primaryEvent=cfg.testing.primary_event,
-                 consider_non_zero_scores=cfg.testing.consider_non_zero_scores_only,
-                 num=200, K=cfg.testing.map_k, test=False, predictionio_url="http://0.0.0.0:8000"):
+def import_events(engine_client, events_data,
+                  seed = cfg.splitting.random_seed):
+    random.seed(seed)
+    count = 0
+
+    logging.info('Importing data..')
+
+    for line in events_data:
+        dict_data = line.asDict()
+        creation_time = parser.parse(dict_data["creationTime"])
+        event_time = parser.parse(dict_data["eventTime"])
+
+        if dict_data["event"] != "$set":
+            engine_client.create(
+                event = dict_data["event"],
+                entity_type = "user",
+                entity_id = dict_data["entityId"],
+                target_entity_type = "item",
+                target_entity_id = dict_data["targetEntityId"],
+                event_time = event_time,
+                creation_time = creation_time,
+            )
+            print("Event: " + str(dict_data))
+        else:
+            engine_client.create(
+                event = "$set",
+                entity_type = "item",
+                entity_id = dict_data['entityId'],
+                event_time = event_time,
+                creation_time = creation_time,
+                properties = dict_data["properties"].asDict()
+            )
+            print("Event: " + str(dict_data))
+
+
+def run_map_test(data, eventNames, users = None,
+                 primaryEvent = cfg.testing.primary_event,
+                 consider_non_zero_scores = cfg.testing.consider_non_zero_scores_only,
+                 num = 200, K = cfg.testing.map_k,
+                 test = False, harness_url = "http://localhost:9090"):
+
     N_TEST = 2000
-    d = {}
+    user_information = {}
     res_data = {}
-    engine_client = predictionio.EngineClient(url=predictionio_url)
+
+    # Create harness engine for events...
+    engine_client = harness.EventsClient(
+        engine_id = cfg.engine_id,
+        url = harness_url,
+        threads = 5,
+        qsize = 500)
+
+    import_events(engine_client, data)
+    logging.info(engine_client.host)
+    engine_client.close()
+
+    # Create query client in harness...
+    logging.info("Queries for " + cfg.engine_id)
+
+    query_client = harness.QueriesClient(
+        engine_id = cfg.engine_id,
+        url = harness_url,
+        threads=5,
+        qsize=500)
 
     for rec in data:
         if rec.event == primaryEvent:
             user = rec.entityId
             item = rec.targetEntityId
             if not users or user in users:
-                d.setdefault(user, []).append(item)
+                user_information.setdefault(user, []).append(item)
 
     if test:
-        holdoutUsers = [*d.keys()][1:N_TEST]
+        holdoutUsers = [*user_information.keys()][1:N_TEST]
     else:
-        holdoutUsers = [*d.keys()]
+        holdoutUsers = [*user_information.keys()]
 
     prediction = []
     ground_truth = []
     user_items_cnt = 0.0
     users_cnt = 0
+
     for user in tqdm(holdoutUsers):
-        q = {
+        query = {
             "user": user,
             "eventNames": eventNames,
             "num": num,
         }
 
         try:
-            res = engine_client.send_query(q)
+            res = query_client.send_query(query)
             # Sort by score then by item name
-            tuples = sorted([(r["score"], r["item"]) for r in res["itemScores"]], reverse=True)
+            tuples = sorted([(r["score"], r["item"]) for r in res.json_body['result']], reverse=True)
             scores = [score for score, item in tuples]
             items = [item for score, item in tuples]
             res_data[user] = {
@@ -426,16 +487,17 @@ def run_map_test(data, eventNames, users=None, primaryEvent=cfg.testing.primary_
             if consider_non_zero_scores:
                 if len(scores) > 0 and scores[0] != 0.0:
                     prediction.append(items)
-                    ground_truth.append(d.get(user, []))
-                    user_items_cnt += len(d.get(user, []))
+                    ground_truth.append(user_information.get(user, []))
+                    user_items_cnt += len(user_information.get(user, []))
                     users_cnt += 1
             else:
                 prediction.append(items)
-                ground_truth.append(d.get(user, []))
-                user_items_cnt += len(d.get(user, []))
+                ground_truth.append(user_information.get(user, []))
+                user_items_cnt += len(user_information.get(user, []))
                 users_cnt += 1
-        except predictionio.NotFoundError:
+        except harness.NotFoundError:
             print("Error with user: %s" % user)
+
     return ([metrics.mapk(ground_truth, prediction, k) for k in range(1, K + 1)],
             res_data, user_items_cnt / (users_cnt + 0.00001))
 
@@ -446,14 +508,14 @@ def get_nonzero(r_data):
 
 
 @click.command()
-@click.option('--csv_report', is_flag=True)
-@click.option('--all', is_flag=True)
-@click.option('--dummy_test', is_flag=True)
-@click.option('--separate_test', is_flag=True)
-@click.option('--all_but_test', is_flag=True)
-@click.option('--primary_pairs_test', is_flag=True)
-@click.option('--custom_combos_test', is_flag=True)
-@click.option('--non_zero_users_from_file', is_flag=True)
+@click.option('--csv_report', is_flag = True)
+@click.option('--all', default = True, is_flag=True)
+@click.option('--dummy_test', is_flag = True)
+@click.option('--separate_test', is_flag = True)
+@click.option('--all_but_test', is_flag = True)
+@click.option('--primary_pairs_test', is_flag = True)
+@click.option('--custom_combos_test', is_flag = True)
+@click.option('--non_zero_users_from_file', is_flag = True)
 def test(csv_report,
          all,
          dummy_test,
@@ -473,14 +535,14 @@ def test(csv_report,
             reporter = CSVReport(cfg.reporting.csv_dir, None)
     else:
         reporter = ExcelReport(cfg.reporting.file)
-
     logging.info('Spark context initialization')
-    sc = SparkContext(cfg.spark.master, 'map_test: test')
+
+    sc = SparkContext(cfg.spark.master, 'map_test: train')
     sqlContext = SQLContext(sc)
 
-    logging.info('Test data reading')
-    test_df = sqlContext.read.json(cfg.splitting.test_file).select("entityId", "event", "targetEntityId").cache()
+    logging.info('Train data reading')
 
+    test_df = sqlContext.read.json(cfg.splitting.test_file).cache()
     test_data = test_df.filter("event = '%s'" % (cfg.testing.primary_event)).collect()
 
     #non_zero_users = set([r[0] for r in test_data][500:650]) # Because actually all our users have 0.0 scores -- too few data
@@ -488,9 +550,8 @@ def test(csv_report,
     if all or dummy_test:
         logging.info('Train data reading')
 
-        train_df = sqlContext.read.json(cfg.splitting.train_file).select("entityId", "event", "targetEntityId").cache()
+        train_df = sqlContext.read.json(cfg.splitting.train_file).cache()
         counts = train_df.filter("event = '%s'" % (cfg.testing.primary_event)).groupBy("targetEntityId").count().collect()
-
         sorted_rating = sorted([(row.asDict()['count'], row.asDict()['targetEntityId']) for row in counts], reverse=True)
         elements = np.array([item for cnt, item in sorted_rating])
         probs = np.array([cnt for cnt, item in sorted_rating])
@@ -516,9 +577,10 @@ def test(csv_report,
             cfg=cfg
         )
         reporter.finish_sheet()
-
         logging.info('Process top 20 dummy test')
+
         scores = []
+
         for i in range(20):
             scores.append(run_map_test_dummy(test_data, items=elements[i:], uniform=True,
                                              top=True, K=1, no_progress=True)[0])
@@ -534,6 +596,7 @@ def test(csv_report,
 
     if all or separate_test or all_but_test or primary_pairs_test or custom_combos_test:
         logging.info('Non zero users')
+
         if non_zero_users_from_file:
             with open(cfg.testing.non_zero_users_file) as input:
                 non_zero_users = set(input.read().split(','))
@@ -546,6 +609,7 @@ def test(csv_report,
     if all or separate_test:
         logging.info('Process "map separate events" test')
         columns = []
+
         for ev in cfg.testing.events:
             (r_scores, r_data, ipu) = run_map_test(test_data, [ev], users=non_zero_users, test=False)
             columns.append(r_scores + [len(non_zero_users)])

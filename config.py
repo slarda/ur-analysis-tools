@@ -20,7 +20,8 @@ def init_config(config_file):
     with open(config_dict['engine_config']) as engine_input:
         engine_config_dict = json.load(engine_input)
 
-    config_dict['testing']['events'] = engine_config_dict['algorithms'][0]['params']['eventNames']
+    config_dict['engine_id'] = engine_config_dict['engineId']
+    config_dict['testing']['events'] = [indicator['name'] for indicator in engine_config_dict['algorithm']['indicators']]
     config_dict['testing']['primary_event'] = config_dict['testing']['events'][0]
     config_dict['testing']['non_zero_users_file'] += "." + config_dict['splitting']['version']
 
