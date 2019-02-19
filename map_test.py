@@ -99,17 +99,20 @@ def split(intersections, csv_report):
         reporter = ExcelReport(cfg.reporting.file)
 
     logging.info('Spark initialization')
+
     sc = SparkContext(cfg.spark.master, 'map_test: split')
     sqlContext = SQLContext(sc)
 
     logging.info('Source file reading')
+
     df = sqlContext.read.json(cfg.splitting.source_file)
     df = df.withColumn("Date", F.from_utc_timestamp("eventTime", "UTC"))
+    df = df[(df.event != '$set') & (df.event != '$unset')]
 
     users_with_event_count = df.groupBy(F.col("entityId").alias("user")).count()
 
-
     logging.info('Filter users with small number of events')
+
     min_events = 10
     users_with_few_events = (users_with_event_count
                              .filter("count < %d" % (min_events))
@@ -125,32 +128,28 @@ def split(intersections, csv_report):
     train_df.coalesce(1).write.format('json').save(cfg.splitting.train_file)
     test_df.coalesce(1).write.format('json').save(cfg.splitting.test_file)
 
-
     train_df = train_df.select("entityId", "event", "targetEntityId").cache()
     test_df = test_df.select("entityId", "event", "targetEntityId").cache()
 
-
     logging.info('Calculation of different stat metrics of datasets')
+
     events_by_type = (df
                       .groupBy("event")
                       .count()
                       .select(F.col("event"), F.col("count").alias("count_total"))
                       .toPandas())
-
     events_by_type_test = (test_df
                            .groupBy("event")
                            .count()
                            .select(F.col("event"), F.col("count").alias("count_test"))
                            .toPandas()
                            .set_index("event"))
-
     events_by_type_train = (train_df
                             .groupBy("event")
                             .count()
                             .select(F.col("event"), F.col("count").alias("count_train"))
                             .toPandas()
                             .set_index("event"))
-
     unique_users_by_event = (df
                              .select(F.col("entityId"), F.col("event"))
                              .distinct()
@@ -159,7 +158,6 @@ def split(intersections, csv_report):
                              .select(F.col("event"), F.col("count").alias("unique_users_total"))
                              .toPandas()
                              .set_index("event"))
-
     unique_users_by_event_train = (train_df
                                    .select(F.col("entityId"), F.col("event"))
                                    .distinct()
@@ -168,7 +166,6 @@ def split(intersections, csv_report):
                                    .select(F.col("event"), F.col("count").alias("unique_users_train"))
                                    .toPandas()
                                    .set_index("event"))
-
     unique_users_by_event_test = (test_df
                                   .select(F.col("entityId"), F.col("event"))
                                   .distinct()
@@ -177,7 +174,6 @@ def split(intersections, csv_report):
                                   .select(F.col("event"), F.col("count").alias("unique_users_test"))
                                   .toPandas()
                                   .set_index("event"))
-
     unique_items_by_event = (df
                              .select(F.col("targetEntityId"), F.col("event"))
                              .distinct()
@@ -186,7 +182,6 @@ def split(intersections, csv_report):
                              .select(F.col("event"), F.col("count").alias("unique_items_total"))
                              .toPandas()
                              .set_index("event"))
-
     unique_items_by_event_train = (train_df
                                    .select(F.col("targetEntityId"), F.col("event"))
                                    .distinct()
@@ -195,7 +190,6 @@ def split(intersections, csv_report):
                                    .select(F.col("event"), F.col("count").alias("unique_items_train"))
                                    .toPandas()
                                    .set_index("event"))
-
     unique_items_by_event_test = (test_df
                                   .select(F.col("targetEntityId"), F.col("event"))
                                   .distinct()
@@ -206,6 +200,7 @@ def split(intersections, csv_report):
                                   .set_index("event"))
 
     logging.info('Calculate total counts')
+
     events = df.count()
     events_train = train_df.count()
     events_test = test_df.count()
@@ -238,7 +233,10 @@ def split(intersections, csv_report):
     info_df.insert(4, 'events per user', info_df.ix[:, 1] / info_df.ix[:, 2])
     info_df.insert(5, 'events per item', info_df.ix[:, 1] / info_df.ix[:, 3])
 
+    info_df = info_df.fillna(0)
+
     logging.info('Create event stat worksheet')
+
     reporter.start_new_sheet('Events stat')
     reporter.report(
         ['event', 'event count', 'unique users', 'unique items',
@@ -257,7 +255,9 @@ def split(intersections, csv_report):
         reporter.start_new_sheet('Intersections')
 
         columns_for_matrix = cfg.testing.events
+
         logging.info('Process train / train user intersection')
+
         train_train_users = (
             train_df
             .select(F.col("entityId").alias("user"), F.col("event").alias("event_left"))
@@ -267,14 +267,14 @@ def split(intersections, csv_report):
             .groupBy(["event_left", "event_right"])
             .count()
             .collect())
-
         trtru = mk_intersection_matrix(train_train_users, columns_for_matrix)
+
         reporter.report(
             [''] + list(trtru.columns.values),
             [trtru.index.tolist()] + [column for _, column in trtru.iteritems()],
             title='Train / train user intersection')
-
         logging.info('Process train / test user intersection')
+
         train_test_users = (
             train_df
             .select(F.col("entityId").alias("user"), F.col("event").alias("event_left"))
@@ -291,8 +291,8 @@ def split(intersections, csv_report):
             [''] + list(trtsu.columns.values),
             [trtsu.index.tolist()] + [column for _, column in trtsu.iteritems()],
             title='Train / test user intersection')
-
         logging.info('Process train / train item intersection')
+
         train_train_items = (
             train_df
             .select(F.col("targetEntityId").alias("item"), F.col("event").alias("event_left"))
@@ -309,8 +309,8 @@ def split(intersections, csv_report):
             [trtri.index.tolist()] + [column for _, column in trtri.iteritems()],
             title='Train / train item intersection'
         )
-
         logging.info('Process train / test item intersection')
+
         train_test_items = (
             train_df
             .select(F.col("targetEntityId").alias("item"), F.col("event").alias("event_left"))
@@ -328,7 +328,6 @@ def split(intersections, csv_report):
             [trtsi.index.tolist()] + [column for _, column in trtsi.iteritems()],
             title='Train / test item intersection'
         )
-
         reporter.report_config(cfg)
 
     reporter.finish_document()
@@ -393,7 +392,6 @@ def import_events(engine_client, events_data,
 
     for line in events_data:
         dict_data = line.asDict()
-        creation_time = parser.parse(dict_data["creationTime"])
         event_time = parser.parse(dict_data["eventTime"])
 
         if dict_data["event"] != "$set":
@@ -404,7 +402,6 @@ def import_events(engine_client, events_data,
                 target_entity_type = "item",
                 target_entity_id = dict_data["targetEntityId"],
                 event_time = event_time,
-                creation_time = creation_time,
             )
             print("Event: " + str(dict_data))
         else:
@@ -413,7 +410,6 @@ def import_events(engine_client, events_data,
                 entity_type = "item",
                 entity_id = dict_data['entityId'],
                 event_time = event_time,
-                creation_time = creation_time,
                 properties = dict_data["properties"].asDict()
             )
             print("Event: " + str(dict_data))
@@ -652,6 +648,7 @@ def test(csv_report,
         logging.info('Process "map pairs with primary" test')
         columns = []
         events_without_primary = [event for event in cfg.testing.events if event != cfg.testing.primary_event]
+
         for event in events_without_primary:
             (r_scores, r_data, ipu) = run_map_test(test_data, [cfg.testing.primary_event, event],
                                                    users=non_zero_users, test=False)
@@ -670,6 +667,7 @@ def test(csv_report,
     if all or custom_combos_test:
         logging.info('Process "custom combos" test')
         columns = []
+
         for event_group in cfg.testing.custom_combos.event_groups:
             if len(event_group) == 2 and cfg.testing.primary_event in event_group and primary_pairs_test:
                 logging.warn("Report for group %s already generated in 'MAP pairs with primary'" % str(event_group))
@@ -683,19 +681,25 @@ def test(csv_report,
                 logging.warn("Report for group %s already generated in 'All but...'" % str(event_group))
                 continue
 
+            if not (set(cfg.testing.events) & set(event_group)):
+                logging.warn("Event group is not corect!")
+                continue
+
             (r_scores, r_data, ipu) = run_map_test(test_data, event_group,
-                                                   users=non_zero_users, test=False)
+                                                   users = non_zero_users,
+                                                   test=False)
             columns.append(r_scores + [len(non_zero_users)])
 
-        first_column = [('MAP @ %d' % i) for i in range(1, len(columns[0]))] + ['non-zero users']
+        if columns:
+            first_column = [('MAP @ %d' % i) for i in range(1, len(columns[0]))] + ['non-zero users']
 
-        reporter.start_new_sheet('Custom combos')
-        reporter.report(
-            ['event'] + [str([s.encode('utf-8') for s in group]) for group in cfg.testing.custom_combos.event_groups],
-            [first_column] + columns,
-            cfg=cfg
-        )
-        reporter.finish_sheet()
+            reporter.start_new_sheet('Custom combos')
+            reporter.report(
+                ['event'] + [str([s.encode('utf-8') for s in group]) for group in cfg.testing.custom_combos.event_groups],
+                [first_column] + columns,
+                cfg=cfg
+            )
+            reporter.finish_sheet()
 
     reporter.finish_document()
     logging.info('Testing finished successfully')
